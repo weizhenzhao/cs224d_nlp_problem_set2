@@ -85,7 +85,7 @@ def data_iterator(orig_X, orig_y=None, batch_size=32, label_size=2, shuffle=Fals
   else:
     data_X = orig_X
     data_y = orig_y
-  ###
+  # ##
   total_processed_examples = 0
   total_steps = int(np.ceil(len(data_X) / float(batch_size)))
   for step in range(total_steps):
@@ -98,7 +98,7 @@ def data_iterator(orig_X, orig_y=None, batch_size=32, label_size=2, shuffle=Fals
       y_indices = data_y[batch_start:batch_start + batch_size]
       y = np.zeros((len(x), label_size), dtype=np.int32)
       y[np.arange(len(y_indices)), y_indices] = 1
-    ###
+    # ##
     yield x, y
     total_processed_examples += len(x)
   # Sanity check to make sure we iterated over all the dataset as intended
