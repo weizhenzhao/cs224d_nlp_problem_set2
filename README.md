@@ -9,3 +9,6 @@ To run the linear classifier model <br>
 click into the tf_classifier.py file , run as python.run<br>
 then you will execute the linear classifier model with softmax regression in the random generalize number set<br>
 .
+
+To run the language model <br>
+you should click into q3_rnnlm.py file but it has bug <br>
