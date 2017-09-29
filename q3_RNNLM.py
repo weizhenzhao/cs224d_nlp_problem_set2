@@ -12,6 +12,7 @@ from utils import calculate_perplexity, get_ptb_dataset, Vocab
 from utils import ptb_iterator, sample
 import tensorflow as tf
 from model import LanguageModel
+from tensorflow.contrib.legacy_seq2seq.python.ops.seq2seq import sequence_loss
 
 
 class Config(object):
@@ -62,12 +63,24 @@ class RNNLM_Model(LanguageModel):
         Returns:
             inputs:一个训练次数的列表,每一个元素应该是
                     一个张量 大小是 (batch_size,embed_size)
+        tf.split(dimension,num_split,input)
+                dimension表示输入张量的哪一个维度,
+                                        如果是0就表示对第0维度进行切割,
+                num_split就是切割的数量,
+                                        如果是2就表示输入张量被切成2份,
+                                        每一份是一个列表
+        tf.squeeze(input,squeeze_dims=None,name=None)
+                                        从tensor中删除所有大小是1的维度
+                example: t is a tensor of shape [1,2,1,3,1,1]
+                        shape(squeeze(t))==>[2,3]
+                        t is a tensor of shape [1,2,1,3,1,1]
+                        shape(squeeze(t,[2,4]))==>[1,2,3,1]
+        tf.nn.embedding_lookup 将词的索引映射到词的向量
         """
         with tf.device('/cpu:0'):
-            embedding = tf.get_variable('Embedding',[len(self.vocab),self.config.embed_size], trainable=True)
+            embedding = tf.get_variable('Embedding', [len(self.vocab), self.config.embed_size], trainable=True)
             inputs = tf.nn.embedding_lookup(embedding, self.input_placeholder)
-            inputs = [tf.squeeze(x, [1]) for x in tf.split(1, self.config.num_steps, inputs)]
-
+            inputs = [tf.squeeze(x, [1]) for x in tf.split(inputs, self.config.num_steps, 1)]
             return inputs
 
     def add_projection(self, rnn_outputs):
@@ -87,8 +100,23 @@ class RNNLM_Model(LanguageModel):
             proj_b = tf.get_variable('Bias', [len(self.vocab)])
             outputs = [tf.matmul(o, U) + proj_b for o in rnn_outputs]
         return outputs
-
+    
     def add_loss_op(self, output):
+        """将损失添加到目标函数上面
+            Hint:使用tensorflow.python.ops.seq2seq.sequence_loss 来实现序列损失
+                              参数:
+                                        输出:一个张量   大小是 (None,self.vocab)
+                              返回:
+                                        损失：一个0-d大小的张量
+        """
+        all_ones = [tf.ones([self.config.batch_size * self.config.num_steps])]
+        cross_entropy = sequence_loss([output], [tf.reshape(self.labels_placeholder, [-1])], all_ones, len(self.vocab))
+        tf.add_to_collection('total_loss', cross_entropy)
+        loss = tf.add_n(tf.get_collection('total_loss'))
+        return loss
+        
+        
+    def add_training_op(self, loss):
         """将目标损失添加到计算图上
             创建一个优化器并且应用梯度下降到所有的训练变量上面
             Hint:使用tf.train.AdamOptimizer 对于这个模型
@@ -98,9 +126,8 @@ class RNNLM_Model(LanguageModel):
             返回:
                 train_op:训练的目标
         """
-        optimizer = tf.train.AdamOptimizer(self.config.lr)
-        train_op = optimizer.minimize(self.calculate_loss)
-
+        with tf.variable_scope("Optimizer") as scope:
+            train_op = tf.train.AdamOptimizer(self.config.lr).minimize(loss)
         return train_op
 
     def __init__(self, config):
@@ -116,13 +143,13 @@ class RNNLM_Model(LanguageModel):
         # sum(output of softmax) = 1.00000298179 并且不是 1
         self.predictions = [tf.nn.softmax(tf.cast(o, 'float64')) for o in self.outputs]
         # 将输出值转变成 len(vocab) 的大小
-        output = tf.reshape(tf.concat(1, self.outputs), [-1, len(self.vocab)])
+        output = tf.reshape(tf.concat(self.outputs, 1), [-1, len(self.vocab)])
         self.calculate_loss = self.add_loss_op(output)
         self.train_step = self.add_training_op(self.calculate_loss)
 
-    def add_model(self, input_data):
+    def add_model(self, inputs):
         """创建RNN LM 模型
-        在下面的实现里面你需要去实现RNN LM 模型的等式
+                      在下面的实现里面你需要去实现RNN LM 模型的等式
         Hint: 使用一个零向量 大小是 (batch_size,hidden_size) 作为初始的RNN的状态
         Hint: 将最后RNN输出 作为实例变量
             self.final_state
@@ -165,7 +192,7 @@ class RNNLM_Model(LanguageModel):
             rnn_outputs = [tf.nn.dropout(x, self.dropout_placeholder) for x in rnn_outputs]
         return rnn_outputs
 
-    def rnn_epoch(self, session, data, train_op=None, verbose=10):
+    def run_epoch(self, session, data, train_op=None, verbose=10):
         config = self.config
         dp = config.dropout
         if not train_op:
@@ -233,13 +260,13 @@ def test_RNNLM():
     gen_config.batch_size = gen_config.num_steps = 1
 
     # 创建训练模型，并且生成模型
-    with tf.variable_scope('RNNLM') as scope:
+    with tf.variable_scope('RNNLM',reuse=None) as scope:
         model = RNNLM_Model(config)
         # 这个指示gen_model来重新使用相同的变量作为以上的模型
         scope.reuse_variables()
         gen_model = RNNLM_Model(gen_config)
 
-    init = tf.initialize_variables()
+    init = tf.global_variables_initializer()
     saver = tf.train.Saver()
 
     with tf.Session() as session:
@@ -247,33 +274,32 @@ def test_RNNLM():
         best_val_epoch = 0
         session.run(init)
         for epoch in range(config.max_epochs):
-            print('Epoch {}'.format(epoch))
+            print('Epoch {0}'.format(epoch))
             start = time.time()
 
             train_pp = model.run_epoch(session,
                                        model.encoded_train,
                                        train_op=model.train_step)
             valid_pp = model.run_epoch(session, model.encoded_valid)
-            print('Training perplexity: { } '.format(train_pp))
-            print('Validation perplexity: { } '.format(valid_pp))
+            print('Training perplexity: {0}'.format(train_pp))
+            print('Validation perplexity:{0}'.format(valid_pp))
             if valid_pp < best_val_pp:
                 best_val_pp = valid_pp
                 best_val_epoch = epoch
                 saver.save(session, './ptb_rnnlm.weights')
             if epoch - best_val_epoch > config.early_stopping:
                 break
-            print('Total time : { }'.format(time.time() - start))
+            print('Total time : {0}'.format(time.time() - start))
 
         saver.restore(session, 'ptb_rnnlm.weights')
         test_pp = model.run_epoch(session, model.encoded_test)
         print('=-=' * 5)
-        print('Test perplexity: {} '.format(test_pp))
+        print('Test perplexity: {0} '.format(test_pp))
         print('=-=' * 5)
         starting_text = 'in palo alto'
         while starting_text:
-            print(
-                ' '.join(generate_sentence(session, gen_model, gen_config, starting_text=starting_text, temp=1.0)))
-            starting_text = raw_input('>')
+            print(' '.join(generate_sentence(session, gen_model, gen_config, starting_text=starting_text, temp=1.0)))
+            #starting_text = raw_input('>')
 
 
 if __name__ == "__main__":
